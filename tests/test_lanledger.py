@@ -472,6 +472,17 @@ class LogReader(Case):
         self.take("login.bad.example")
         self.assertEqual({k: (v[0], v[3]) for k, v in self.hits.items()}, {(A, "login.bad.example"): ("bad.example", 2)})
 
+    def test_a_log_gone_silent_is_reported_while_devices_are_online(self):
+        self.take("www.example.com")
+        self.assertEqual(self.app.troubles(self.now + 600, 3), [])
+        late = self.app.troubles(self.now + 2 * 3600 + 5, 3)
+        self.assertEqual(len(late), 1)
+        self.assertIn("for 2 h", late[0])
+        self.assertEqual(self.app.troubles(self.now + 2 * 3600 + 5, 0), [])   # an empty house looks nothing up
+        self.take("www.example.com")                                          # self.now again: the test's clock, not the wall's
+        self.app.trouble["log"] = "cannot be read"
+        self.assertEqual(self.app.troubles(self.now + 2 * 3600 + 5, 3), ["cannot be read"])   # one reason is enough
+
     def test_an_error_does_not_end_the_recording(self):
         calls = []
 

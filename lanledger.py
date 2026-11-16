@@ -187,7 +187,8 @@ PI_VENDOR = "this Pi (lanledger)"
 SILENT_DAYS = 7  # an online device with no lookups for this long is flagged as bypassing lanledger
 WHERE_EVERY = 300  # seconds between asking each mesh unit which devices are on it
 ARP_TRUST = 600  # seconds the Pi's own sighting of an address outranks what the Deco says about it
-CUT_OFF = 1800   # online according to the Deco but unanswered by the Pi for this long: isolated from the Pi
+CUT_OFF = 1800
+QUIET = 3600  # this long without one line in the DNS log, with devices online, and something is wrong   # online according to the Deco but unanswered by the Pi for this long: isolated from the Pi
 OUI_URL = "https://standards-oui.ieee.org/oui/oui.csv"  # the public register of who makes which hardware addresses
 CONN_NAMES = {"wired": "Wired", "band2_4": "Wi-Fi 2.4 GHz", "band5": "Wi-Fi 5 GHz", "band6": "Wi-Fi 6 GHz"}
 
@@ -460,6 +461,7 @@ class App:
         self.deco_since = {}   # device -> since when the Deco has said, without a break, that it is online
         self.sweep_ok = 0      # the last sweep that actually heard from the network
         self.trouble = {}      # what is not working, for the dashboard to say: job -> message
+        self.heard = time.time()  # when the DNS log last said anything
         self.last_prune = 0
         self.private = set()   # devices whose lookups are not recorded
         self.load_private()
@@ -1016,6 +1018,7 @@ class App:
 
     def take(self, line, now, pending, hits):
         """One line of the DNS log: count the lookup against its device, and note it if the site is a known-bad one."""
+        self.heard = now
         rec = self.parse_line(line, now)
         if not rec:
             return
@@ -1096,6 +1099,15 @@ class App:
     def api_summary(self, p):
         return self.cached("summary", self.summary)
 
+    def troubles(self, now, online):
+        """What to tell the household is not working. A DNS log that can be read but has gone silent counts: with
+        devices online that does not happen by itself, and it means their lookups are going somewhere lanledger cannot see."""
+        out = dict(self.trouble)
+        if online and "log" not in out and now - self.heard > QUIET:
+            out["quiet"] = (f"No lookups have reached lanledger for {int((now - self.heard) // 3600)} h, so nothing is being recorded. "
+                            "Either the DNS service on the Pi has stopped writing its log, or devices are no longer using the Pi for DNS.")
+        return sorted(out.values())
+
     def summary(self):
         now = int(time.time())
         day = now - 86400
@@ -1115,7 +1127,7 @@ class App:
                           GROUP BY base ORDER BY first DESC, c DESC LIMIT 15""", (day, day))
         return {
             **d, **t, "last_scan": self.last_scan, "now": now, "activity": self.day_activity()[1],
-            "trouble": sorted(self.trouble.values()),
+            "trouble": self.troubles(now, d["online"]),
             "can_block": bool(self.a.block_file), "blocked": sorted(self.block_active),
             "deco": bool(self.deco_config()[0]) and self.deco_state["ok"],
             "top": named(top), "fresh": named(fresh),

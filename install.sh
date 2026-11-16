@@ -129,6 +129,10 @@ fi
 
 # dnsmasq keeps the owner it finds; group lanledger lets the collector read the log.
 DNSMASQ_USER="$(getent passwd dnsmasq >/dev/null && echo dnsmasq || echo nobody)"
+# dnsmasq starts as root but runs as its own user, and it is as that user that it reopens the log after each night's
+# rotation. So the folder has to be one that user can enter, or from the first midnight on it logs elsewhere
+# and lanledger records nothing.
+chown "$DNSMASQ_USER":lanledger /var/log/lanledger
 touch /var/log/lanledger/dnsmasq.log
 chown "$DNSMASQ_USER":lanledger /var/log/lanledger/dnsmasq.log
 chmod 640 /var/log/lanledger/dnsmasq.log
@@ -233,7 +237,9 @@ EOF
 systemctl daemon-reload
 systemctl enable -q dnsmasq lanledger lanledger-blocklist.path
 # Restarting dnsmasq drops lookups for the whole house for a moment: only when its settings changed or it is not running.
-if [[ $DNSMASQ_CHANGED == 1 ]] || ! systemctl is-active -q dnsmasq; then systemctl restart dnsmasq; fi
+if [[ $DNSMASQ_CHANGED == 1 ]] || ! systemctl is-active -q dnsmasq; then systemctl restart dnsmasq
+else pkill -USR2 -x dnsmasq || true   # reopen the log, in case it lost hold of it; this drops nothing
+fi
 systemctl restart lanledger lanledger-blocklist.path
 
 cat <<EOF
