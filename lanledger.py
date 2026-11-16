@@ -318,19 +318,23 @@ SERVICES = {
             "AdGuard DNS=adguard-dns.com; NordVPN=nordvpn.com nordvpn.net; ExpressVPN=expressvpn.com; "
             "Proton VPN=protonvpn.com protonvpn.ch; Mullvad=mullvad.net; Surfshark=surfshark.com; Tailscale=tailscale.com; "
             "Tor=torproject.org",
+    # Only names that serve nothing but ads or tracking belong here: lanledger offers to block these in one click.
+    # graph.facebook.com is not one (the Facebook and Instagram apps and "Log in with Facebook" run on it).
     "Ads & tracking": "Google ads & analytics=doubleclick.net googlesyndication.com googleadservices.com google-analytics.com "
-                      "googletagmanager.com googletagservices.com app-measurement.com crashlytics.com; "
-                      "Amazon ads=amazon-adsystem.com; Meta ads=graph.facebook.com an.facebook.com; "
+                      "googletagmanager.com googletagservices.com app-measurement.com; "
+                      "Amazon ads=amazon-adsystem.com; Meta ads=an.facebook.com; "
                       "Smart TV ad tracking=samsungads.com samsungacr.com lgsmartad.com; "
                       "Ad networks=adnxs.com criteo.com criteo.net taboola.com outbrain.com rubiconproject.com pubmatic.com "
                       "openx.net adsrvr.org moatads.com quantserve.com applovin.com unityads.unity3d.com scorecardresearch.com; "
                       "App analytics=branch.io appsflyer.com adjust.com mixpanel.com segment.io segment.com amplitude.com "
-                      "newrelic.com nr-data.net sentry.io hotjar.com demdex.net omtrdc.net bugsnag.com",
+                      "hotjar.com demdex.net omtrdc.net",
     "System services": "Apple=apple.com icloud.com mzstatic.com apple-dns.net aaplimg.com icloud-content.com cdn-apple.com; "
                        "Google=google.com gstatic.com googleapis.com googleusercontent.com gvt1.com gvt2.com ggpht.com android.com; "
                        "Microsoft=microsoft.com windows.com windowsupdate.com msftconnecttest.com msftncsi.com live.com msn.com "
                        "windows.net msedge.net; Samsung=samsung.com samsungcloudsolution.com samsungcloudsolution.net; "
                        "LG=lgtvsdp.com lgappstv.com lgtvcommon.com; Time sync=ntp.org time.nist.gov; "
+                       # apps reporting their own crashes and slowness to their makers: not advertising, and not offered for blocking
+                       "App crash reports=crashlytics.com sentry.io bugsnag.com newrelic.com nr-data.net; "
                        "Linux updates=ubuntu.com canonical.com debian.org raspberrypi.com raspberrypi.org fedoraproject.org; "
                        "Mozilla=mozilla.org mozilla.com mozilla.net firefox.com",
     "Cloud & CDN": "Amazon Web Services=amazonaws.com cloudfront.net awsstatic.com; "
@@ -1384,7 +1388,9 @@ class App:
                 found.append({"kind": "hidden", "services": cats[HIDDEN]["services"]})
             ads = cats.get("Ads & tracking")
             if ads and ads["c"] >= 50 and ads["c"] >= total * 0.3:
-                found.append({"kind": "tracking", "services": ads["services"], "pct": round(ads["c"] / total * 100)})
+                found.append({"kind": "tracking", "services": ads["services"], "pct": round(ads["c"] / total * 100),
+                              # exactly what "Block the tracking" would block, for the question it asks first
+                              "names": sorted(n for s in ads["services"] for n in self.targets({"service": s}))})
             if d.get("net") == "guest":
                 found.append({"kind": "guest"})
             items += [{**f, "key": f"{f['kind']}:{mac}", "mac": mac} for f in found if f"{f['kind']}:{mac}" not in gone]

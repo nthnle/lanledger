@@ -970,7 +970,7 @@ function attnRow(it){
     title = `${n}: ${it.pct}% of what it does is ads and tracking`;
     text = `Mostly ${it.services.join(", ")}.` + (canBlock ? " You can block it for the whole network." : "");
     btns = [canBlock ? el("button", {class:"act", onclick:async () => { if (await setBlock(it.services.map(service => ({service})), true,
-      `Block ${it.services.join(", ")} for every device on your network?\n\nThose ads and trackers stop loading everywhere. Now and then a site or app that depends on them misbehaves. ${UNDO}`)) dismiss(it.key); }}, "Block the tracking") : null, view, ignore];
+      `Block ${it.services.join(", ")} for every device on your network?\n\nThis blocks ${(it.names || []).join(", ")}, and everything under those names.\n\nThose ads and trackers stop loading everywhere. Now and then a site or app that depends on them misbehaves. ${UNDO}`)) dismiss(it.key); }}, "Block the tracking") : null, view, ignore];
   }
   const urgent = urgentKind(it);
   return el("div", {class:"attn-row" + (urgent ? " urgent" : "")}, d ? icon(d) : null, el("div", {class:"txt"}, el("b", {}, urgent ? [el("span", {class:"tag bad"}, "Security"), " "] : null, title), el("span", {}, text)), el("div", {class:"btns"}, btns));

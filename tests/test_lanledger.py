@@ -436,6 +436,27 @@ class RouterImpostor(Case):
         self.assertEqual(self.alerts()[0]["mac"], self.OTHER)
 
 
+class WhatCountsAsAds(Case):
+    """lanledger offers to block "ads and tracking" in one click, so nothing that apps need may be filed there."""
+
+    def test_names_apps_depend_on_are_not_ads(self):
+        ads = lambda name: lanledger.classify(name)[1] == "Ads & tracking"
+        self.assertTrue(ads("stats.g.doubleclick.net") and ads("an.facebook.com"))
+        self.assertEqual(lanledger.classify("graph.facebook.com"), ("Facebook", "Social media"))   # the apps and "Log in with Facebook"
+        for name in ("firebase-settings.crashlytics.com", "o1.ingest.sentry.io", "notify.bugsnag.com", "bam.nr-data.net"):
+            self.assertEqual(lanledger.classify(name), ("App crash reports", "System services"), name)
+        with self.assertRaises(ValueError):                              # and a whole group of those cannot be blocked in one go
+            self.app.targets({"service": "App crash reports"})
+
+    def test_the_suggestion_says_exactly_what_it_would_block(self):
+        self.device(A)
+        hour = self.now - self.now % 3600
+        self.app.x("INSERT INTO dns_hourly(dev, domain, base, hour, count) VALUES(?,?,?,?,?)", (A, "an.facebook.com", "facebook.com", hour, 80))
+        self.app.x("INSERT INTO dns_hourly(dev, domain, base, hour, count) VALUES(?,?,?,?,?)", (A, "graph.facebook.com", "facebook.com", hour, 20))
+        item = [i for i in self.app.api_attention({}) if i["kind"] == "tracking"][0]
+        self.assertEqual((item["services"], item["names"], item["pct"]), (["Meta ads"], ["an.facebook.com"], 80))
+
+
 class LogReader(Case):
     """Every lookup dnsmasq logs is counted against a device, and nothing ends the counting for good."""
     LINE = "Nov 12 10:00:00 dnsmasq[1]: query[A] %s from 10.0.0.1\n"
