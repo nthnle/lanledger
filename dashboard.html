@@ -753,6 +753,7 @@ let filter = "all", sort = {key:null, dir:1}, liveRows = [], livePaused = false,
 let view = "list";
 try { if (localStorage.getItem("lanledger-view") === "map") view = "map"; } catch (e) {}
 let ownerInput = null, histOpen = false, portsBusy = false, speedBusy = false, schedEdit = null, liveOnlyBlocked = false, hasDeco = false;
+let blockOpen = new Set();  // blocked services whose list of addresses is opened out
 let blocked = new Set(), canBlock = false, attention = [], attnSeen = "", attnAll = false, techOpen = false, attnOpen = false, detailFull = false, refusedDay = null;
 
 // ---- blocking --------------------------------------------------------------
@@ -813,8 +814,8 @@ async function loadBlocked(){
   // A blocked service is many addresses; show it as the one thing the person blocked.
   const groups = new Map();
   for (const r of b.rows) {
-    const k = r.whole ? "svc:" + r.svc : r.domain, g = groups.get(k) || {key:k, svc: r.whole ? r.svc : "", doms: [], added: r.added, c: 0, from: r.t_from, to: r.t_to, active: r.active};
-    g.doms.push(r.domain); g.c += r.c; g.added = Math.min(g.added, r.added); groups.set(k, g);
+    const k = r.whole ? "svc:" + r.svc : r.domain, g = groups.get(k) || {key:k, svc: r.whole ? r.svc : "", doms: [], rows: [], added: r.added, c: 0, from: r.t_from, to: r.t_to, active: r.active};
+    g.doms.push(r.domain); g.rows.push(r); g.c += r.c; g.added = Math.min(g.added, r.added); groups.set(k, g);
   }
   const setHours = async (g, from, to) => {
     for (const domain of g.doms) {  // exactly the addresses already blocked, never the wider service
@@ -840,11 +841,24 @@ async function loadBlocked(){
     ["bt-lists", `${on} of ${b.lists.length}`, "ready-made lists switched on"], ["bt-allowed", fmt(b.allowed.length), b.allowed.length === 1 ? "exception" : "exceptions"]]
     .map(([id, n, label]) => el("div", {class:"card tile"}, el("b", {id}, n), el("span", {}, label))));
   fill($("#blockrows"), table([{t:"Blocked"},{t:"When"},{t:"Tried in the last 24 hours",num:1},{t:""}],
-    [...groups.values()].map(g => el("tr", {},
-      el("td", {class:"site"}, g.svc ? [el("b", {}, g.svc), el("span", {class:"d"}, g.doms.length === 1 ? g.doms[0] : `${g.doms.length} addresses`)] : el("span", {class:"mono"}, g.doms[0])),
-      whenCell(g),
-      el("td", {class:"num"}, g.c ? `${fmt(g.c)} time${g.c === 1 ? "" : "s"}` : "not tried"),
-      el("td", {class:"fit"}, el("button", {class:"ghost", onclick:() => setBlock(g.svc ? {service:g.svc} : g.doms[0], false)}, "Unblock")))),
+    [...groups.values()].flatMap(g => {
+      // a service of several addresses opens to show each one: what exactly is blocked, how often it was tried, and a way to let one back in
+      const many = g.svc && g.doms.length > 1, open = many && blockOpen.has(g.key);
+      const tried = c => c ? `${fmt(c)} time${c === 1 ? "" : "s"}` : "not tried";
+      return [el("tr", {},
+        el("td", {class:"site"}, g.svc ? [el("b", {}, g.svc), many
+          ? el("button", {class:"mini", style:"margin-left:8px", "aria-expanded":String(open), title:"Show the exact addresses this blocks",
+              onclick:() => { if (open) blockOpen.delete(g.key); else blockOpen.add(g.key); loadBlocked(); }}, `${g.doms.length} addresses ${open ? "▴" : "▾"}`)
+          : el("span", {class:"d mono"}, g.doms[0])] : el("span", {class:"mono"}, g.doms[0])),
+        whenCell(g),
+        el("td", {class:"num"}, tried(g.c)),
+        el("td", {class:"fit"}, el("button", {class:"ghost", onclick:() => setBlock(g.svc ? {service:g.svc} : g.doms[0], false)}, "Unblock"))),
+        ...(open ? g.rows.slice().sort((a, b) => b.c - a.c || (a.domain < b.domain ? -1 : 1)).map(r => el("tr", {},
+          el("td", {class:"site", style:"padding-left:28px"}, el("span", {class:"mono"}, r.domain)),
+          el("td", {class:"mute"}, "and everything under it"),
+          el("td", {class:"num mute"}, tried(r.c)),
+          el("td", {class:"fit"}, el("button", {class:"mini", onclick:() => setBlock(r.domain, false)}, "Unblock this one")))) : [])];
+    }),
     b.enabled ? "Nothing is blocked. Block a site here, or use the Block button next to any site on the other tabs." : ""));
   $("#listsoff").hidden = b.can_lists;
   const toggle = async (l, on) => {

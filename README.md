@@ -177,6 +177,51 @@ To switch the known-bad site check off entirely, reinstall with `sudo EXTRA_ARGS
 
 lanledger can send a line of text to any address that accepts one. The simplest setup is the free [ntfy](https://ntfy.sh) app: subscribe to a topic name you make up, then put `https://ntfy.sh/<that-name>` in Settings. Anyone who knows the topic name can read the alerts, so make it hard to guess.
 
+## How it decides
+
+Everything lanledger tells you comes from a rule simple enough to state. These are the rules, with their numbers. They are constants near the top of `lanledger.py` if you want different ones.
+
+**Which device made a lookup**
+
+- dnsmasq logs each lookup with the IP address that asked. lanledger turns that address into a hardware address using its own sweep of the network (`arp-scan`, every minute), and counts the lookup against that device.
+- With a Deco connected, the Deco's client list fills in devices the sweep missed. Where the two disagree about who holds an address, the sweep wins for 10 minutes after it last saw the device, because the Deco's list lags behind.
+- A lookup from an address no device has been matched to is kept under that address, and shows in the list as a device with no hardware address.
+- Lookups are stored as counts per device, site and hour. The time of an individual lookup is not kept beyond the Live tab, which holds the last 3,000 in memory.
+- Reverse lookups (`.arpa`) and the Pi's own lookups are not counted.
+
+**What a lookup is called**
+
+- A name is matched, longest ending first, against a built-in table of about 330 site names grouped into some 130 services ("Netflix") and categories ("Streaming video"): the `SERVICES` table in `lanledger.py`. No match means "Other sites".
+- A device's guessed type comes from the name it announces, then the services it advertises on the network, then a week of what it looks up.
+
+**What blocking does**
+
+- A site you block is written to a file dnsmasq re-reads within seconds, as `server=/name/`. dnsmasq then answers "no such domain" for that name and everything under it, and never forwards the question.
+- A block with hours is put into that file when its window opens and taken out when it closes, checked every half minute.
+- The ready-made lists other than malware and phishing are host files: each listed name answers `0.0.0.0`, and only the exact names listed are covered.
+- The malware and phishing list covers each listed name and everything under it (dnsmasq 2.86 or newer).
+- An exception wins over every list. Over a block you made yourself it does not: unblock the site instead.
+- A device that already has the answer keeps using it until its own cache expires, usually minutes. A device that does not ask the Pi is not affected at all.
+- "Tried N times" counts lookups of names that were blocked at that moment, worked out from lanledger's own lists.
+
+**When something lands on the to-do list**
+
+| Entry | Rule |
+|---|---|
+| New device | A hardware address not seen before. Stays until you mark it reviewed. |
+| Known-bad site | A lookup of a name on the malware and phishing list, or of anything under one. Shown for 7 days after the last attempt. |
+| Answering as your router | Hardware that is not your router, a mesh unit or something you trusted answers for the router's address on two sweeps running. Addresses that differ from the router's only in the last two digits count as the router. |
+| Nothing visible | Online, in the list for more than 7 days, and no lookup recorded in the last 7. Not raised for the router, mesh units, the Pi, isolated devices or ones you stopped recording. |
+| Hides part of what it does | At least one lookup in the last 24 hours of a VPN, iCloud Private Relay or encrypted-DNS service. |
+| Ads and tracking | At least 50 lookups of ad and tracking names in the last 24 hours, and those are at least 30% of all its lookups. The table lists only names that serve nothing else; crash reporting is kept apart and never offered for blocking. |
+| On guest Wi-Fi | The Deco reports it on the guest network. |
+
+**Other labels**
+
+- **Online**: answered the sweep, or was listed by the Deco, within the last 5 minutes (three sweeps, if you lengthened the interval).
+- **Isolated**: the Deco has called it online for 30 minutes without a break, and in that time neither it nor any entry merged with it answered the Pi's sweep, while the sweep itself was working.
+- **The status at the top right turns red** when the sweep finds nothing, the DNS log cannot be read, or no lookup at all has arrived for an hour while devices are online.
+
 ## Limits
 
 Be clear-eyed about what a DNS-based tool can and cannot do.
@@ -184,7 +229,7 @@ Be clear-eyed about what a DNS-based tool can and cannot do.
 - **It sees names, not content.** Which sites, how often, and when. Never pages, messages or how much data moved (except the Deco estimate).
 - **Some devices bypass it.** Anything using a VPN, iCloud Private Relay, a browser with its own encrypted DNS, or a hard-coded DNS server (some smart TVs and streaming sticks) shows little or nothing. lanledger flags these when it can tell, and can switch Private Relay off for your network.
 - **The same goes for blocking.** A device that bypasses the Pi's DNS is not affected by blocks.
-- **Guesses are guesses.** Device types and activity categories come from a built-in list of well-known services in `lanledger.py`. Anything not on it shows as "Other sites".
+- **Guesses are guesses.** Device types and activity categories come from a built-in list of well-known services in `lanledger.py`. Anything not on it shows as "Other sites". The rules are set out in [How it decides](#how-it-decides).
 - **Phones use private hardware addresses.** A phone that rotates its address shows up as a new device each time.
 - **"Online" is approximate.** A sleeping phone often does not answer the sweep. Connecting a Deco makes this more accurate.
 - **Isolated devices are out of reach.** A device you put in Device Isolation in the Deco app cannot talk to the Pi, so lanledger sees none of its lookups and cannot block anything for it. With a Deco connected, lanledger marks such devices "isolated" and stops warning that they are silent. It works this out from the Deco calling a device online while the Pi cannot reach it, so treat the label as a strong hint.
@@ -240,6 +285,44 @@ sudo rm -rf /opt/lanledger /etc/lanledger /var/lib/lanledger /var/lib/lanledger-
 ```
 
 **Tests:** `python3 -m unittest discover tests` and `node tests/test_dashboard.js`. They need nothing installed and do not touch the network: the web server, the DNS log reader and the Deco client are each run against stand-ins on this machine.
+
+## Troubleshooting
+
+Most commands here need `sudo`: the logs are not readable by an ordinary user, and without it `journalctl` prints "No entries" instead of an error.
+
+**Nothing is being recorded** (empty Activity and Live tabs; after an hour the status turns red)
+
+Work down this list. Each step tells you which half of the system to look at.
+
+1. Are both services running?
+   ```
+   systemctl is-active lanledger dnsmasq
+   ```
+2. Is dnsmasq writing its log? The last lines should be seconds old.
+   ```
+   sudo ls -la /var/log/lanledger/
+   sudo tail -n 3 /var/log/lanledger/dnsmasq.log
+   ```
+3. If the log is empty or old, is dnsmasq answering lookups at all?
+   ```
+   sudo journalctl -u dnsmasq -n 5 --no-pager
+   ```
+   - **Fresh lookups in the journal, none in the file:** dnsmasq has lost hold of its log file and fallen back to the journal. `sudo systemctl restart dnsmasq` brings it back. Versions before 16 November 2026 did this after every nightly log rotation; running `./update.sh` fixes the cause.
+   - **No fresh lookups anywhere:** devices are not asking the Pi. Check that the router still hands out the Pi's address as the DNS server, and that the Pi still has that address (`ip -4 addr`). From a computer, `nslookup example.com <the Pi's address>` should answer. Devices pick up a changed DNS setting only when they reconnect.
+4. If the log is current and the dashboard is still empty, lanledger's own log says why:
+   ```
+   sudo journalctl -u lanledger -n 30 --no-pager
+   ```
+
+**One device shows nothing.** It is bypassing the Pi (see [Limits](#limits)), it is in Device Isolation, or you stopped recording it. A device that is online and shows nothing for a week is put on the to-do list.
+
+**A block does not seem to work.** Ask the Pi directly: `nslookup the-site.example <the Pi's address>` should say the name does not exist. If it does, the block is in place and the device is using an answer it already had, or its own DNS (a VPN, or a browser's "secure DNS" setting). If it does not, look at the Blocked tab: a block with hours only applies inside them, and an exception lets a listed site through.
+
+**The dashboard will not open.** Check `systemctl is-active lanledger`, and that you are using port 8080 unless you chose another. The dashboard answers to the Pi's address and to its own name (`name`, `name.local`, `name.lan`, `name.home`); under any other name it refuses, as a defence against hostile web pages. To use another name, reinstall with `EXTRA_ARGS="--allow-host that-name"`.
+
+**Devices appear twice.** A device with both a cable and Wi-Fi, or a phone using a private address, is two hardware addresses. Merge them in the device panel under **Technical details and merging**.
+
+**The Deco is "not working right now".** Settings shows the Deco's own error. The usual cause is the owner account being signed in elsewhere: a Deco allows one owner session at a time. After repeated wrong passwords lanledger stops trying, so the Deco does not lock the account; enter the password again in Settings.
 
 ## Status
 
