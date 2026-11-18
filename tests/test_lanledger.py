@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import deco  # noqa: E402
@@ -457,6 +458,23 @@ class WhatCountsAsAds(Case):
         self.assertEqual((item["services"], item["names"], item["pct"]), (["Meta ads"], ["an.facebook.com"], 80))
 
 
+class ReverseNames(Case):
+    """A name asked of the router by address is only kept if it is a name."""
+
+    def test_an_error_from_dig_is_not_taken_for_a_name(self):
+        self.device(A)
+        self.app.a.gateway = "10.0.0.254"
+        dig = lambda out: (lambda cmd, timeout=10: out if cmd[0] == "dig" else "")
+        with mock.patch("lanledger.shutil.which", lambda name: name == "dig"):
+            with mock.patch("lanledger.run", dig(";; communications error to 10.0.0.254#53: timed out\n")):
+                self.app.resolve_names(self.now)
+            self.assertFalse(self.app.q("SELECT hostname FROM devices WHERE mac=?", (A,))[0]["hostname"])
+            self.app.x("UPDATE devices SET host_checked=0")
+            with mock.patch("lanledger.run", dig("kitchen-tv.lan.\n")):
+                self.app.resolve_names(self.now)
+        self.assertEqual(self.app.q("SELECT hostname FROM devices WHERE mac=?", (A,))[0]["hostname"], "kitchen-tv.lan")
+
+
 class LogReader(Case):
     """Every lookup dnsmasq logs is counted against a device, and nothing ends the counting for good."""
     LINE = "Nov 12 10:00:00 dnsmasq[1]: query[A] %s from 10.0.0.1\n"
@@ -627,7 +645,17 @@ class DecoPoll(Case):
         self.assertEqual(self.app.deco_since[A], first - 500)            # still online: the clock keeps running
         self.stub.list[0]["online"] = False
         self.app.deco_poll(0)
-        self.assertNotIn(A, self.app.deco_since)                         # gone: it starts afresh when it returns
+        self.assertEqual(self.app.deco_since[A], first - 500)            # left out of one list: a dozing gadget, not gone
+        self.app.deco_last[A] -= lanledger.DECO_GAP + 1
+        self.app.deco_poll(0)
+        self.assertNotIn(A, self.app.deco_since)                         # gone for a good while: it starts afresh when it returns
+
+    def test_a_restart_remembers_how_long_the_deco_has_called_a_device_online(self):
+        self.app.deco_poll(0)
+        self.app.x("UPDATE devices SET deco_since=deco_since-5000 WHERE mac=?", (A,))
+        again = lanledger.App(self.app.a)
+        self.addCleanup(again.db.close)
+        self.assertEqual(again.deco_since[A], self.app.deco_since[A] - 5000)
 
     def test_a_wrong_password_stops_the_asking(self):
         def refuse(node="default"):

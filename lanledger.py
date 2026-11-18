@@ -76,6 +76,7 @@ MIGRATIONS = [
     ("devices", "owner", "TEXT DEFAULT ''"), ("devices", "node", "TEXT DEFAULT ''"), ("dns_hourly", "blocked", "INTEGER DEFAULT 0"),
     ("blocked", "t_from", "INTEGER"), ("blocked", "t_to", "INTEGER"),
     ("devices", "arp_seen", "INTEGER DEFAULT 0"), ("devices", "private", "INTEGER DEFAULT 0"),
+    ("devices", "deco_since", "INTEGER DEFAULT 0"),
 ]
 SESSION_DAYS = 30
 SPEED_URL = "https://speed.cloudflare.com/__down?bytes=50000000"  # the server refuses much larger requests
@@ -188,6 +189,7 @@ SILENT_DAYS = 7  # an online device with no lookups for this long is flagged as 
 WHERE_EVERY = 300  # seconds between asking each mesh unit which devices are on it
 ARP_TRUST = 600  # seconds the Pi's own sighting of an address outranks what the Deco says about it
 CUT_OFF = 1800
+DECO_GAP = 900  # the Deco leaves a dozing gadget out of its list now and then: a gap shorter than this is not "gone"
 QUIET = 3600  # this long without one line in the DNS log, with devices online, and something is wrong   # online according to the Deco but unanswered by the Pi for this long: isolated from the Pi
 OUI_URL = "https://standards-oui.ieee.org/oui/oui.csv"  # the public register of who makes which hardware addresses
 CONN_NAMES = {"wired": "Wired", "band2_4": "Wi-Fi 2.4 GHz", "band5": "Wi-Fi 5 GHz", "band6": "Wi-Fi 6 GHz"}
@@ -402,6 +404,9 @@ def is_randomized(mac):
     return int(int(mac[:2], 16) & 2 > 0)
 
 
+HOSTNAME_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62})(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62}))*")
+
+
 def run(cmd, timeout=10):
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
@@ -426,6 +431,7 @@ class App:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self.db.commit()
         self.db.execute("UPDATE devices SET conn='' WHERE conn='undefined'")  # the Deco's word for "do not know", stored by older versions
+        self.db.execute("UPDATE devices SET hostname='', host_checked=0 WHERE hostname LIKE ';%'")  # dig's error text, stored as a name by older versions
         self.db.commit()
         self.ipmap = {}
         self.arp_ip, self.arp_mac = {}, {}  # what the Pi's own sweep last saw: ip -> (mac, when), mac -> (ip, when)
@@ -462,7 +468,11 @@ class App:
         # "login.bad.example"). dnsmasq does that well from 2.86 on; older ones fall back to exact names only.
         v = re.search(r"version (\d+)\.(\d+)", run(["dnsmasq", "--version"]))
         self.wild_ok = not v or (int(v.group(1)), int(v.group(2))) >= (2, 86)
-        self.deco_since = {}   # device -> since when the Deco has said, without a break, that it is online
+        # device -> since when the Deco has called it online, and when it last did. Kept in the database too, so
+        # a restart (every update is one) does not make every isolated device wait half an hour for its label again.
+        self.deco_since, self.deco_last = {}, {}
+        for r in self.q("SELECT mac, deco_since, last_seen FROM devices WHERE deco_since>0 AND last_seen>?", (time.time() - DECO_GAP,)):
+            self.deco_since[r["mac"]], self.deco_last[r["mac"]] = r["deco_since"], r["last_seen"]
         self.sweep_ok = 0      # the last sweep that actually heard from the network
         self.trouble = {}      # what is not working, for the dashboard to say: job -> message
         self.heard = time.time()  # when the DNS log last said anything
@@ -714,7 +724,8 @@ class App:
                 name = out[1] if len(out) > 1 else ""
             if not name and self.a.gateway and shutil.which("dig"):
                 out = run(["dig", "+short", "+time=2", "+tries=1", "-x", r["ip"], "@" + self.a.gateway], timeout=5)
-                name = out.strip().splitlines()[0].rstrip(".") if out.strip() else ""
+                # dig prints its complaints (";; communications error ... timed out") where the answer would go
+                name = next((l.strip().rstrip(".") for l in out.splitlines() if HOSTNAME_RE.fullmatch(l.strip().rstrip("."))), "")
             if name:
                 self.x("UPDATE devices SET hostname=?, host_checked=? WHERE mac=?", (name[:100], now, r["mac"]))
             else:
@@ -778,7 +789,14 @@ class App:
             return now
         dt, hour, speed, usage = min(now - last, 120) if last else 0, now - now % 3600, {}, []
         up = {c["mac"] for c in clients if c["online"]}
-        self.deco_since = {mac: self.deco_since.get(mac, now) for mac in up}
+        fresh = [mac for mac in up if mac not in self.deco_since]
+        for mac in up:
+            self.deco_since.setdefault(mac, now)
+            self.deco_last[mac] = now
+        gone = [mac for mac, t in self.deco_last.items() if now - t > DECO_GAP]
+        for mac in gone:
+            self.deco_since.pop(mac, None)
+            self.deco_last.pop(mac, None)
         for c in clients:
             mac = c["mac"]
             if c["online"]:
@@ -792,6 +810,8 @@ class App:
                 speed[mac] = (c["down"], c["up"])
                 if dt:
                     usage.append((mac, hour, c["down"] * dt, c["up"] * dt))
+        if fresh or gone:  # after the loop above, which adds any device the database does not have yet
+            self.x("UPDATE devices SET deco_since=? WHERE mac=?", [(now, m) for m in fresh] + [(0, m) for m in gone], many=True)
         if usage:
             self.x("""INSERT INTO usage_hourly VALUES(?,?,?,?) ON CONFLICT(mac, hour)
                       DO UPDATE SET down=down+excluded.down, up=up+excluded.up""", usage, many=True)
