@@ -193,6 +193,11 @@ class Isolated(Case):
         self.app.x("UPDATE devices SET arp_seen=? WHERE mac=?", (self.now - 3600, B))   # the Pi last heard it an hour ago
         self.assertEqual(self.devices()[B]["isolated"], 0)
 
+    def test_a_device_whose_lookups_reach_the_pi_is_not_isolated(self):
+        self.deco_only(B, self.LONG)                                     # ignores the sweep, as some smart plugs do
+        self.lookups(B, 0)                                               # yet asks the Pi for addresses this hour
+        self.assertEqual(self.devices()[B]["isolated"], 0)
+
     def test_a_failed_sweep_does_not_isolate_the_whole_house(self):
         self.deco_only(B, self.LONG)
         self.app.sweep_ok = self.now - 3600                              # sweeps have been coming back empty

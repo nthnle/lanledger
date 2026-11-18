@@ -1261,7 +1261,10 @@ class App:
             fam = self.family(mac)
             since = min((self.deco_since[m] for m in fam if m in self.deco_since), default=now)
             r["isolated"] = int(bool(swept and r["online"] and not r["infra"] and not r["randomized"] and not mac.startswith("ip:")
-                                     and since < now - CUT_OFF and (r.get("arp_seen") or 0) < now - CUT_OFF))
+                                     and since < now - CUT_OFF and (r.get("arp_seen") or 0) < now - CUT_OFF
+                                     # its lookups reach the Pi, so it is not kept from it: some gadgets simply ignore the sweep.
+                                     # Lookups are counted by the hour, so "lately" is anything in an hour that ended within the cut-off.
+                                     and r["last_lookup"] + 3600 < now - CUT_OFF))
             r["mostly"] = mostly(cats)
             r["hidden"] = int(any(c["cat"] == HIDDEN for c in cats))
             r["down"], r["up"] = (sum(self.speed.get(m, (0, 0))[i] for m in fam) for i in (0, 1))
